@@ -159,7 +159,7 @@ void EXTI9_5_IRQHandler(void) {
         UART_Send_String(buffer);
 			
 
-        if (weight < 0.04) {             // 300 grams threshold
+        if (weight < 0.04) {             // 40 grams threshold
             GPIOA->ODR &= ~(1UL << 5);   // Turn off LED at PA5
             GPIOA->ODR |= (1UL << 6);    // Turn on LED at PA6
 						if (weight==0.000){
