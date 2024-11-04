@@ -3,11 +3,13 @@
 // Define HX711 pins
 #define HX711_DT_PIN       8   // PB8
 #define HX711_SCK_PIN      9   // PB9
+#define HX711_UPDATE_PIN   7   // PB7 for interrupt
 
 #define SCALE_FACTOR       0.000000003  // Replace with your calibration factor
 #define OFFSET             8392000 // Set this value after initial calibration
 
 #define UART_BAUDRATE 9600
+volatile uint32_t count=0;
 
 void UART_Init(void) {
     RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;     // Enable GPIOA clock
@@ -40,20 +42,24 @@ char UART_Receive(void) {
 void HX711_Init(void) {
     RCC->AHB1ENR |= RCC_AHB1ENR_GPIOBEN;
 
-    // Configure PB8 as input (DT)
-    GPIOB->MODER &= ~(3UL << (2 * HX711_DT_PIN));
-    
-    // Configure PB9 as output (SCK)
-    GPIOB->MODER |= (1UL << (2 * HX711_SCK_PIN));
-    GPIOB->ODR &= ~(1UL << HX711_SCK_PIN); // Set SCK low initially
+    GPIOB->MODER &= ~(3UL << (2 * HX711_DT_PIN));   // Configure PB8 as input (DT)
+    GPIOB->MODER |= (1UL << (2 * HX711_SCK_PIN));   // Configure PB9 as output (SCK)
+    GPIOB->ODR &= ~(1UL << HX711_SCK_PIN);          // Set SCK low initially
 
-    // Configure EXTI for PB8 (DT pin) to trigger interrupt on falling edge
-    SYSCFG->EXTICR[2] |= SYSCFG_EXTICR3_EXTI8_PB; // Map EXTI8 to PB8
-    EXTI->IMR |= (1UL << HX711_DT_PIN);           // Unmask EXTI8
-    EXTI->FTSR |= (1UL << HX711_DT_PIN);          // Trigger on falling edge for EXTI8
+    GPIOB->MODER &= ~(3UL << (2 * HX711_UPDATE_PIN)); // Configure PB7 as input (Update)
+    SYSCFG->EXTICR[1] |= SYSCFG_EXTICR2_EXTI7_PB;     // Map EXTI7 to PB7
+    EXTI->IMR |= EXTI_IMR_IM7;                        // Unmask EXTI line 7
+    EXTI->FTSR |= EXTI_FTSR_TR7;                      // Trigger on falling edge for PB7
+    NVIC_EnableIRQ(EXTI9_5_IRQn);                     // Enable EXTI line 5-9 interrupt
+}
 
-    // Enable NVIC interrupt for EXTI9_5 (covers EXTI5 to EXTI9)
-    NVIC_EnableIRQ(EXTI9_5_IRQn);
+void EXTI9_5_IRQHandler(void) {
+    if (EXTI->PR & EXTI_PR_PR7) {  // Check if interrupt is from line 7 (PB7)
+        EXTI->PR = EXTI_PR_PR7;    // Clear pending interrupt flag
+        if (count == 0) {
+            UART_Send_String("Updating Weight...\r\n");
+        }
+    }
 }
 
 void delay_ms(uint32_t ms) {
@@ -67,10 +73,9 @@ void delay_ms(uint32_t ms) {
 }
 
 uint32_t HX711_Read(void) {
-    uint32_t count = 0;
     GPIOB->ODR &= ~(1UL << HX711_SCK_PIN);
 
-    //while (GPIOB->IDR & (1UL << HX711_DT_PIN));
+    while (GPIOB->IDR & (1UL << HX711_DT_PIN));
 
     for (int i = 0; i < 24; i++) {
         GPIOB->ODR |= (1UL << HX711_SCK_PIN);  // Set SCK high
@@ -89,6 +94,7 @@ uint32_t HX711_Read(void) {
 
 float Get_Weight(void) {
     uint32_t raw_value = HX711_Read();
+		count=0;
     float weight = (float)(raw_value) * SCALE_FACTOR;
     return weight;
 }
@@ -96,10 +102,11 @@ float Get_Weight(void) {
 void Float_To_String(float value, char* str) {
     int intPart = (int)value;
     float decimalPart = value - intPart;
-    int decimalInt = (int)(decimalPart * 1000);
+    int decimalInt = (int)(decimalPart * 1000); // Scale up to 3 decimal places
 
     int index = 0;
 
+    // Convert the integer part
     if (intPart == 0) {
         str[index++] = '0';
     } else {
@@ -116,6 +123,7 @@ void Float_To_String(float value, char* str) {
 
     str[index++] = '.'; // Decimal point
 
+    // Convert the decimal part
     if (decimalInt < 10) {
         str[index++] = '0';
         str[index++] = '0';
@@ -135,46 +143,12 @@ void Float_To_String(float value, char* str) {
         str[index++] = '0' + (decimalInt % 10);
     }
 
+    // Append units
     str[index++] = ' ';
     str[index++] = 'k';
     str[index++] = 'g';
     str[index++] = '\n';
-    str[index] = '\0';
-}
-
-void EXTI9_5_IRQHandler(void) {
-    if (EXTI->PR & (1UL << HX711_DT_PIN)) {  // Check if the interrupt is from PB8 (DT)
-        float weight = Get_Weight();
-        char buffer[50];
-	if (USART1->SR & USART_SR_RXNE) {
-            char received = UART_Receive();
-            if (received == 'O') {
-                float difference = 0.5 - weight;
-                Float_To_String(difference,buffer);
-                UART_Send_String(buffer);
-            }
-        }
-			
-        Float_To_String(weight, buffer);
-        UART_Send_String(buffer);
-			
-
-        if (weight < 0.04) {             // 40 grams threshold
-            GPIOA->ODR &= ~(1UL << 5);   // Turn off LED at PA5
-            GPIOA->ODR |= (1UL << 6);    // Turn on LED at PA6
-						if (weight==0.000){
-							UART_Send_String("Out of stock\r\n");
-						}else{
-							UART_Send_String("Only few in stock\r\n");
-						}
-        } else {
-            GPIOA->ODR &= ~(1UL << 6);   // Turn off LED at PA6
-            GPIOA->ODR |= (1UL << 5);    // Turn on LED at PA5
-						UART_Send_String("In Stock\r\n");
-        }
-
-        EXTI->PR |= (1UL << HX711_DT_PIN);  // Clear the EXTI interrupt pending bit
-    }
+    str[index] = '\0'; // Null-terminate the string
 }
 
 // Exception handlers
@@ -229,13 +203,50 @@ int main(void) {
     HX711_Init();
     UART_Init();
 
-    // Trigger_Reset();               // Uncomment to trigger a reset
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
+    
+    GPIOA->MODER &= ~((3UL << (2 * 5)) | (3UL << (2 * 6)));
+    GPIOA->MODER |= (1UL << (2 * 5)) | (1UL << (2 * 6));
+
+    float weight;
+    char buffer[50];
+	
+		// Trigger_Reset();               // Uncomment to trigger a reset
     // Trigger_HardFault();           // Uncomment to trigger a hard fault
     // Trigger_MemoryManagementFault(); // Uncomment to trigger a memory management fault
-    // Trigger_BusFault();            // Uncomment to trigger a bus fault
-    // Trigger_UsageFault();  
+    //Trigger_BusFault();            // Uncomment to trigger a bus fault
+    //Trigger_UsageFault();
 
     while (1) {
-        // Main loop does other tasks; HX711 handled via interrupt on PB8.
+        weight = Get_Weight();
+			
+				if (USART1->SR & USART_SR_RXNE) {
+            char received = UART_Receive();
+            if (received == 'O') {
+                float difference = 0.5 - weight;
+                Float_To_String(difference,buffer);
+                UART_Send_String(buffer);
+            }
+        }
+			
+        Float_To_String(weight, buffer);
+        UART_Send_String(buffer);
+			
+
+        if (weight < 0.04) {             // 300 grams threshold
+            GPIOA->ODR &= ~(1UL << 5);   // Turn off LED at PA5
+            GPIOA->ODR |= (1UL << 6);    // Turn on LED at PA6
+						if (weight==0.000){
+							UART_Send_String("Out of stock\r\n");
+						}else{
+							UART_Send_String("Only few in stock\r\n");
+						}
+        } else {
+            GPIOA->ODR &= ~(1UL << 6);   // Turn off LED at PA6
+            GPIOA->ODR |= (1UL << 5);    // Turn on LED at PA5
+						UART_Send_String("In Stock\r\n");
+        }
+
+        delay_ms(500);
     }
 }
