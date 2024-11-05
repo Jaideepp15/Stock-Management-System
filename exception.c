@@ -54,7 +54,7 @@ void triggerBusFault(void) {
 void triggerUsageFault(void) {
     // Enable Usage Fault and Divide-by-Zero trap
     SCB->CCR |= SCB_CCR_DIV_0_TRP_Msk; // Set the DIV_0_TRP bit to trap divide-by-zero errors
-    //SCB->SHCSR |= SCB_SHCSR_USGFAULTENA_Msk; // Enable Usage Fault
+    SCB->SHCSR |= SCB_SHCSR_USGFAULTENA_Msk; // Enable Usage Fault
     
     // Perform a divide-by-zero operation to trigger the Usage Fault
     volatile int a = 10;
