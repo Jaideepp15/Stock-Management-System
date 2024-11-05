@@ -151,54 +151,6 @@ void Float_To_String(float value, char* str) {
     str[index] = '\0'; // Null-terminate the string
 }
 
-// Exception handlers
-void HardFault_Handler(void) {
-    UART_Send_String("Hard Fault occurred!\r\n");
-    while (1);  // Stay in this loop to halt the program
-}
-
-void MemManage_Handler(void) {
-    UART_Send_String("Memory Management Fault occurred!\r\n");
-    while (1);
-}
-
-void BusFault_Handler(void) {
-    UART_Send_String("Bus Fault occurred!\r\n");
-    while (1);
-}
-
-void UsageFault_Handler(void) {
-    UART_Send_String("Usage Fault occurred!\r\n");
-    while (1);
-}
-
-// Functions to trigger each exception
-
-void Trigger_Reset(void) {
-    NVIC_SystemReset();  // Triggers a system reset
-}
-
-void Trigger_HardFault(void) {
-    volatile int *p = (int*)0x0;  // Null pointer dereference
-    *p = 42;                      // This will cause a Hard Fault
-}
-
-void Trigger_MemoryManagementFault(void) {
-    volatile int *p = (int*)0xE000ED90; // Invalid memory address in system region
-    *p = 0;  // This will cause a Memory Management Fault
-}
-
-void Trigger_BusFault(void) {
-    volatile int *p = (int*)0x40000002; // Unaligned access to a peripheral address
-    *p = 1;  // This will cause a Bus Fault
-}
-
-void Trigger_UsageFault(void) {
-    volatile int a = 5;
-    volatile int b = 0;
-    volatile int c = a / b; // Division by zero, causes a Usage Fault
-}
-
 int main(void) {
     HX711_Init();
     UART_Init();
@@ -210,12 +162,6 @@ int main(void) {
 
     float weight;
     char buffer[50];
-	
-		// Trigger_Reset();               // Uncomment to trigger a reset
-    // Trigger_HardFault();           // Uncomment to trigger a hard fault
-    // Trigger_MemoryManagementFault(); // Uncomment to trigger a memory management fault
-    //Trigger_BusFault();            // Uncomment to trigger a bus fault
-    //Trigger_UsageFault();
 
     while (1) {
         weight = Get_Weight();
