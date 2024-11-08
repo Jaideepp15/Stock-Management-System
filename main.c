@@ -1,15 +1,31 @@
-#include "stm32f4xx.h"
-
-// Define HX711 pins
-#define HX711_DT_PIN       8   // PB8
-#define HX711_SCK_PIN      9   // PB9
-#define HX711_UPDATE_PIN   7   // PB7 for interrupt
-
-#define SCALE_FACTOR       0.000000003  // Replace with your calibration factor
-#define OFFSET             8392000 // Set this value after initial calibration
+#include "stm32f4xx.h"  // Adjust header if needed
 
 #define UART_BAUDRATE 9600
-volatile uint32_t count=0;
+
+#define M 0.0013    // Slope from calibration (example value)
+#define B -0.49
+
+volatile float weight;
+
+float CalculateWeight(uint16_t adc_value) {
+    return (M * adc_value) + B;
+}
+
+void ADC_Init(void) {
+    RCC->APB2ENR |= RCC_APB2ENR_ADC1EN;     // Enable ADC1 clock
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;    // Enable GPIOA clock
+
+    GPIOA->MODER |= GPIO_MODER_MODE1;       // Set PA1 to analog mode
+    ADC1->CR2 = 0;                          // Disable ADC to configure
+    ADC1->SQR3 = 1;                         // Set channel 1 for conversion
+    ADC1->CR2 |= ADC_CR2_ADON;              // Enable ADC
+}
+
+uint16_t ADC_Read(void) {
+    ADC1->CR2 |= ADC_CR2_SWSTART;           // Start conversion
+    while (!(ADC1->SR & ADC_SR_EOC));       // Wait for conversion to complete
+    return ADC1->DR;                        // Return ADC value
+}
 
 void UART_Init(void) {
     RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;     // Enable GPIOA clock
@@ -25,6 +41,14 @@ void UART_Init(void) {
 
     USART1->BRR = (SystemCoreClock/UART_BAUDRATE); // Set baud rate
     USART1->CR1 = USART_CR1_TE | USART_CR1_RE | USART_CR1_UE; // Enable TX, RX, and USART1
+	
+		USART1->CR1 |= USART_CR1_RXNEIE;  // Enable RXNE interrupt
+    NVIC_EnableIRQ(USART1_IRQn);       // Enable USART1 interrupt in NVIC
+}
+
+void UART_SendChar(char c) {
+    while (!(USART1->SR & USART_SR_TXE));   // Wait until transmit data register is empty
+    USART1->DR = c;                         // Send character
 }
 
 void UART_Send_String(char* str) {
@@ -39,68 +63,26 @@ char UART_Receive(void) {
     return USART1->DR;
 }
 
-void HX711_Init(void) {
-    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOBEN;
+// Function to convert integer to string
+void IntToStr(uint16_t value, char *str) {
+    int i = 0;
+    do {
+        str[i++] = (value % 10) + '0';   // Get last digit and convert to character
+        value /= 10;
+    } while (value);
 
-    GPIOB->MODER &= ~(3UL << (2 * HX711_DT_PIN));   // Configure PB8 as input (DT)
-    GPIOB->MODER |= (1UL << (2 * HX711_SCK_PIN));   // Configure PB9 as output (SCK)
-    GPIOB->ODR &= ~(1UL << HX711_SCK_PIN);          // Set SCK low initially
+    str[i] = '\0';                       // Null-terminate the string
 
-    GPIOB->MODER &= ~(3UL << (2 * HX711_UPDATE_PIN)); // Configure PB7 as input (Update)
-    SYSCFG->EXTICR[1] |= SYSCFG_EXTICR2_EXTI7_PB;     // Map EXTI7 to PB7
-    EXTI->IMR |= EXTI_IMR_IM7;                        // Unmask EXTI line 7
-    EXTI->FTSR |= EXTI_FTSR_TR7;                      // Trigger on falling edge for PB7
-    NVIC_EnableIRQ(EXTI9_5_IRQn);                     // Enable EXTI line 5-9 interrupt
-}
-
-void EXTI9_5_IRQHandler(void) {
-    if (EXTI->PR & EXTI_PR_PR7) {  // Check if interrupt is from line 7 (PB7)
-        EXTI->PR = EXTI_PR_PR7;    // Clear pending interrupt flag
-        if (count == 0) {
-            UART_Send_String("Updating Weight...\r\n");
-        }
+    // Reverse the string
+    for (int j = 0; j < i / 2; j++) {
+        char temp = str[j];
+        str[j] = str[i - j - 1];
+        str[i - j - 1] = temp;
     }
-}
-
-void delay_ms(uint32_t ms) {
-    SysTick->LOAD = (SystemCoreClock / 1000) - 1;
-    SysTick->VAL = 0;
-    SysTick->CTRL = 5;
-    for (uint32_t i = 0; i < ms; i++) {
-        while (!(SysTick->CTRL & (1 << 16)));
-    }
-    SysTick->CTRL = 0;
-}
-
-uint32_t HX711_Read(void) {
-    GPIOB->ODR &= ~(1UL << HX711_SCK_PIN);
-
-    while (GPIOB->IDR & (1UL << HX711_DT_PIN));
-
-    for (int i = 0; i < 24; i++) {
-        GPIOB->ODR |= (1UL << HX711_SCK_PIN);  // Set SCK high
-        count = count << 1;
-        GPIOB->ODR &= ~(1UL << HX711_SCK_PIN); // Set SCK low
-        if (GPIOB->IDR & (1UL << HX711_DT_PIN)) {
-            count++;
-        }
-    }
-
-    GPIOB->ODR |= (1UL << HX711_SCK_PIN);
-    GPIOB->ODR &= ~(1UL << HX711_SCK_PIN); // Set SCK low again
-
-    return count;
-}
-
-float Get_Weight(void) {
-    uint32_t raw_value = HX711_Read();
-		count=0;
-    float weight = (float)(raw_value) * SCALE_FACTOR;
-    return weight;
 }
 
 void Float_To_String(float value, char* str) {
-    int intPart = (int)value;
+		int intPart = (int)value;
     float decimalPart = value - intPart;
     int decimalInt = (int)(decimalPart * 1000); // Scale up to 3 decimal places
 
@@ -151,35 +133,57 @@ void Float_To_String(float value, char* str) {
     str[index] = '\0'; // Null-terminate the string
 }
 
-int main(void) {
-    HX711_Init();
-    UART_Init();
+void delay_ms(uint32_t ms) {
+    SysTick->LOAD = (SystemCoreClock / 1000) - 1;
+    SysTick->VAL = 0;
+    SysTick->CTRL = 5;
+    for (uint32_t i = 0; i < ms; i++) {
+        while (!(SysTick->CTRL & (1 << 16)));
+    }
+    SysTick->CTRL = 0;
+}
 
-    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
+void USART1_IRQHandler(void) {
+    // Check if the RXNE flag is set, indicating data received
+    if (USART1->SR & USART_SR_RXNE) {
+        char received = USART1->DR;  // Read the received data, clears RXNE flag
+        if (received == 'O') {
+            float difference = 3.0 - weight;
+						if (difference<0){
+							difference=0.0;
+						}
+            char buffer[20];  // Buffer for the string
+            Float_To_String(difference, buffer);  // Convert difference to string
+            UART_Send_String(buffer);  // Send the buffer over UART
+						UART_Send_String("To be ordered\r\n");
+						UART_SendChar('\r');                 // Newline for readability
+						UART_SendChar('\n');  
+        }
+    }
+}
+
+int main(void) {
+    ADC_Init();
+    UART_Init();
+	
+		RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
     
     GPIOA->MODER &= ~((3UL << (2 * 5)) | (3UL << (2 * 6)));
     GPIOA->MODER |= (1UL << (2 * 5)) | (1UL << (2 * 6));
 
-    float weight;
-    char buffer[50];
+    char buffer[10];
 
     while (1) {
-        weight = Get_Weight();
-			
-				if (USART1->SR & USART_SR_RXNE) {
-            char received = UART_Receive();
-            if (received == 'O') {
-                float difference = 0.5 - weight;
-                Float_To_String(difference,buffer);
-                UART_Send_String(buffer);
-            }
-        }
-			
-        Float_To_String(weight, buffer);
-        UART_Send_String(buffer);
-			
+        uint16_t adc_value = ADC_Read();    // Read FSR value
+        weight = CalculateWeight(adc_value);  // Convert ADC value to weight
+				if (weight<0.0){
+					weight=0.0;
+				}
+				Float_To_String(weight,buffer);
 
-        if (weight < 0.04) {             // 300 grams threshold
+        //IntToStr(adc_value, buffer);         // Convert ADC value to string manually
+        UART_Send_String(buffer);             // Send ADC value over Bluetooth
+				if (weight < 1.0) {             // 1 kg threshold
             GPIOA->ODR &= ~(1UL << 5);   // Turn off LED at PA5
             GPIOA->ODR |= (1UL << 6);    // Turn on LED at PA6
 						if (weight==0.000){
@@ -192,7 +196,11 @@ int main(void) {
             GPIOA->ODR |= (1UL << 5);    // Turn on LED at PA5
 						UART_Send_String("In Stock\r\n");
         }
-
+				
+				
+				UART_SendChar('\r');                 // Newline for readability
+				UART_SendChar('\n');  
+				
         delay_ms(500);
     }
 }
