@@ -2,7 +2,6 @@
 
 // Function to toggle the LED
 void SignalExcep(void) {
-    GPIOA->ODR ^= (1 << 5);
 	  GPIOA->ODR ^= (1 << 6);
 }
 
@@ -114,8 +113,7 @@ void initializeSystem(void) {
     // Enable the GPIO clock for port A
     RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
 
-    // Configure PC13 as output (LED)
-    GPIOA->MODER |= (1 << (5 * 2)); // Set mode to output
+    // Configure PA6 as output (LED)
 		GPIOA->MODER |= (1 << (6 * 2));
     
     
